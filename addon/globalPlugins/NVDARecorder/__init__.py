@@ -1,45 +1,57 @@
 # -*- coding: UTF-8 -*-
-# Copyright (C) 2021-2024 Rui Fontes <rui.fontes@tiflotecnia.com> and Ângelo Abrantes <ampa4374@gmail.com>
+# Copyright (C) 2021-2025 Rui Fontes <rui.fontes@tiflotecnia.com> and Ângelo Abrantes <ampa4374@gmail.com>
 # Based on the work of 高生旺 <coscell@gmail.com> with the same name
+# and some code copied from the work of James Scholes on speechHistory
 # This file is covered by the GNU General Public License.
 
 # import the necessary modules.
 import globalPluginHandler
 import globalVars
-import core
 import api
-try:
-	import speech.speech as speech
-except ModuleNotFoundError:
-	import speech
+import speech
 import speechViewer
+from eventHandler import FocusLossCancellableSpeechCommand
 import wx
 import gui
 import ui
 import os
 import ctypes
-import time
 from scriptHandler import script
 import addonHandler
-# Start the translation process
+
 addonHandler.initTranslation()
 
-# Global variables
+# Path to the output text file
+_NRIniFile = os.path.join(globalVars.appArgs.configPath, "NVDARecord.txt")
+# Recording state flag
 start = False
-oldSpeak = speech.speak
+# Determine which module exposes the speak function
+try:
+	# NVDA => 2021
+	_smod = speech.speech
+except AttributeError:
+	# NVDA < 2021
+	_smod = speech
+
+# Save the original speak method
+oldSpeak = _smod.speak
+
+# Buffer to accumulate spoken text
 contents = ""
 
-# In the original work the file was stored in a path not easily accessed by the
-# normal user, due to translation of the folder name in, at least, Windows 10 in
-# portuguese...
-_NRIniFile = os.path.join(globalVars.appArgs.configPath,"NVDARecord.txt")
-
-def getSequenceText(sequence: speech.SpeechSequence) -> None:
-	return speechViewer.SPEECH_ITEM_SEPARATOR.join([x for x in sequence if isinstance(x, str)])
+def getSequenceText(seq):
+	"""Extract only string items from a SpeechSequence."""
+	seq = [command for command in seq if not isinstance(command, FocusLossCancellableSpeechCommand)]
+	return speechViewer.SPEECH_ITEM_SEPARATOR.join(
+		[item for item in seq if isinstance(item, str)]
+	)
 
 def mySpeak(sequence, *args, **kwargs):
+	"""Wrapped speak method that records speech output."""
 	global contents
+	# Call the original speak method
 	oldSpeak(sequence, *args, **kwargs)
+	# Extract and append text
 	text = getSequenceText(sequence)
 	if text:
 		if "\n" not in text:
@@ -48,107 +60,102 @@ def mySpeak(sequence, *args, **kwargs):
 
 
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
-	# Creating the constructor of the newly created GlobalPlugin class.
 	def __init__(self):
-		# Call of the constructor of the parent class.
 		super(GlobalPlugin, self).__init__()
-		# Avoid use in secure screens
+		# Do not activate in secure screens
 		if globalVars.appArgs.secure:
 			return
 
 	@script(
-	# Translators: Message to be announced during Keyboard Help
-	description=_("Activate/deactivate recording on NVDARecorder"),
-	gesture="kb:alt+numpadplus")
+		# Translators: Message to be announced during Keyboard Help
+		description=_("Activate/deactivate recording on NVDARecorder"),
+		gesture="kb:alt+numpadplus"
+	)
 	def script_record(self, gesture):
-		global start
+		"""Toggle recording of all NVDA speech output."""
+		global start, contents
 		start = not start
-		if not start:
-			speech.speak = oldSpeak
-			global contents
-			with open(_NRIniFile, "w", encoding = "utf-8") as file:
-				file.write(contents)
-				file.close()
-			gui.mainFrame._popupSettingsDialog(ShowResults)
-			ui.message(_("Recording stopped"))
-			# Clean file for next record session...
-			contents = ""
-		else:
+		if start:
+			# Start recording: patch the speak method
 			ui.message(_("Start recording"))
-			speech.speak = mySpeak
+			_smod.speak = mySpeak
+		else:
+			# Stop recording: restore original speak
+			_smod.speak = oldSpeak
+			ui.message(_("Recording stopped"))
+			# Write accumulated text to file
+			with open(_NRIniFile, "w", encoding="utf-8") as f:
+				f.write(contents)
+			# Display the results dialog
+			gui.mainFrame._popupSettingsDialog(ShowResults)
+			# Clear buffer for the next session
+			contents = ""
+
 
 class ShowResults(wx.Dialog):
-	def __init__(self, *args, **kwds):
-		kwds["style"] = kwds.get("style", 0) | wx.DEFAULT_DIALOG_STYLE
-		wx.Dialog.__init__(self, *args, **kwds)
-		self.SetTitle(_("NVDA recorder"))
+	"""Dialog to display recorded speech text."""
+	def __init__(self, *args, **kwargs):
+		kwargs["style"] = kwargs.get("style", 0) | wx.DEFAULT_DIALOG_STYLE
+		super(ShowResults, self).__init__(*args, **kwargs)
+		self.SetTitle(_("NVDA Recorder"))
 
-		sizer_1 = wx.BoxSizer(wx.VERTICAL)
+		mainSizer = wx.BoxSizer(wx.VERTICAL)
 
-		# Translators: Static text announcing the results
-		label_1 = wx.StaticText(self, wx.ID_ANY, _("Here is the recorded text:"))
-		sizer_1.Add(label_1, 0, 0, 0)
+		# Static text label
+		label = wx.StaticText(self, wx.ID_ANY, _("Here is the recorded text:"))
+		mainSizer.Add(label, 0, wx.ALL, 5)
 
+		# Read-only multi-line text control
 		global contents
-		self.contents = contents
-		self.text_ctrl_1 = wx.TextCtrl(self, wx.ID_ANY, contents, size = (550, 350), style=wx.TE_MULTILINE | wx.TE_READONLY)
-		sizer_1.Add(self.text_ctrl_1, 0, 0, 0)
+		self.text_ctrl = wx.TextCtrl(
+			self, wx.ID_ANY, contents,
+			size=(550, 350),
+			style=wx.TE_MULTILINE | wx.TE_READONLY
+		)
+		mainSizer.Add(self.text_ctrl, 1, wx.EXPAND | wx.ALL, 5)
 
-		sizer_2 = wx.StdDialogButtonSizer()
-		sizer_1.Add(sizer_2, 0, wx.ALIGN_RIGHT | wx.ALL, 4)
+		# Standard dialog buttons
+		btnSizer = wx.StdDialogButtonSizer()
+		btnFolder = wx.Button(self, wx.ID_ANY, _("Open NVDARecord.txt's folder"))
+		self.Bind(wx.EVT_BUTTON, self.openFolder, btnFolder)
+		btnSizer.AddButton(btnFolder)
 
-		# Translators: Name of button to open the TXT file folder
-		self.button_1 = wx.Button(self, wx.ID_ANY, _("Open NVDARecord.txt's folder"))
-		self.button_1.SetDefault()
-		sizer_2.Add(self.button_1, 0, 0, 0)
+		btnFile = wx.Button(self, wx.ID_ANY, _("Open NVDARecord.txt"))
+		self.Bind(wx.EVT_BUTTON, self.openTXTFile, btnFile)
+		btnSizer.AddButton(btnFile)
 
-		# Translators: Name of button to open the TXT file
-		self.button_2 = wx.Button(self, wx.ID_ANY, _("Open NVDARecord.txt"))
-		self.button_2.SetDefault()
-		sizer_2.Add(self.button_2, 0, 0, 0)
+		btnCopy = wx.Button(self, wx.ID_ANY, _("Copy to clipboard"))
+		self.Bind(wx.EVT_BUTTON, self.copyToClip, btnCopy)
+		btnSizer.AddButton(btnCopy)
 
-		# Translators: Name of button that allows to copy results to clipboard
-		self.button_SAVE = wx.Button(self, wx.ID_ANY, _("Copy to clipboard"))
-		sizer_2.Add(self.button_SAVE, 0, 0, 0)
+		btnClose = wx.Button(self, wx.ID_CLOSE, "")
+		self.Bind(wx.EVT_BUTTON, self.quit, btnClose)
+		btnSizer.AddButton(btnClose)
 
-		self.button_CLOSE = wx.Button(self, wx.ID_CLOSE, "")
-		sizer_2.AddButton(self.button_CLOSE)
+		btnSizer.Realize()
+		mainSizer.Add(btnSizer, 0, wx.ALIGN_RIGHT | wx.ALL, 5)
 
-		sizer_2.Realize()
-
-		self.SetSizer(sizer_1)
-		sizer_1.Fit(self)
-
-		self.SetEscapeId(self.button_CLOSE.GetId())
-		self.Bind(wx.EVT_BUTTON, self.openFolder, self.button_1)
-		self.Bind(wx.EVT_BUTTON, self.openTXTFile, self.button_2)
-		self.Bind(wx.EVT_BUTTON, self.copyToClip, self.button_SAVE)
-		self.Bind(wx.EVT_BUTTON, self.quit, self.button_CLOSE)
-
+		self.SetSizer(mainSizer)
+		mainSizer.Fit(self)
+		self.SetEscapeId(btnClose.GetId())
 		self.Layout()
 		self.CentreOnScreen()
 
 	def openFolder(self, event):
+		"""Open the folder containing the text file."""
 		self.Destroy()
-		event.Skip()
-		os.startfile(os.path.join(globalVars.appArgs.configPath))
+		os.startfile(globalVars.appArgs.configPath)
 
 	def openTXTFile(self, event):
+		"""Open the recorded text file with default application."""
 		self.Destroy()
-		event.Skip()
-		# Opening the TXT file with the recorded messages
-		z = ctypes.windll.shell32.ShellExecuteW(
-			None, "open", _NRIniFile,
-			None, None, 10
-		)
+		ctypes.windll.shell32.ShellExecuteW(None, "open", _NRIniFile, None, None, 10)
 
 	def copyToClip(self, event):
-		event.Skip()
+		"""Copy the recorded text to the clipboard."""
 		self.Destroy()
-		# Copy result to clipboard
-		api.copyToClip(self.contents)
+		api.copyToClip(self.text_ctrl.GetValue())
 
 	def quit(self, event):
+		"""Close the dialog."""
 		self.Destroy()
-		event.Skip()
-

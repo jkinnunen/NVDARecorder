@@ -21,4 +21,4 @@
 
 
 
-[1]: https://github.com/ruifontes/NVDARecorder/releases/download/2024.01.06/NVDARecorder-2024.01.06.nvda-addon
+[1]: https://github.com/ruifontes/NVDARecorder/releases/download/2025.08.02/NVDARecorder-2025.08.02.nvda-addon

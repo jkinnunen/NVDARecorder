@@ -22,4 +22,4 @@ Este comando pode ser modificado no diálogo "Definir comandos" na categoria "Di
 
 
 
-[1]: https://github.com/ruifontes/NVDARecorder/releases/download/2024.03.22/NVDARecorder-2024.03.22.nvda-addon
+[1]: https://github.com/ruifontes/NVDARecorder/releases/download/2025.08.02/NVDARecorder-2025.08.02.nvda-addon
